@@ -80,7 +80,7 @@ class PlayMusicDecrypter:
 
     def get_outfile(self):
         """Returns output filename based on song informations"""
-        filename = "{AlbumArtist} - {Album} - Disc {DiscNumber} - Track {TrackNumber:02d} - {Title}.mp3".format(**self.info)
+        filename = u"{AlbumArtist} - {Album} - Disc {DiscNumber} - Track {TrackNumber:02d} - {Title}.mp3".format(**self.info)
         return re.sub(r'[<>:"/\\|?*]', " ", filename)
 
     def update_id3(self, outfile):
@@ -130,9 +130,9 @@ def decrypt_files(source_dir="music", destination_dir=".", database="music.db"):
     for f in glob.glob(os.path.join(source_dir, "*.mp3")):
         try:
             decrypter = PlayMusicDecrypter(database, f)
-            print("Decrypting file {} -> {}".format(f, decrypter.get_outfile()))
+            print(u"Decrypting file {} -> {}".format(f, decrypter.get_outfile()))
         except ValueError:
-            print("Skipping file {} (invalid file format)".format(f))
+            print(u"Skipping file {} (invalid file format)".format(f))
             continue
 
         outfile = os.path.join(destination_dir, decrypter.get_outfile())
