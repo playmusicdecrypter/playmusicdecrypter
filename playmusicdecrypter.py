@@ -82,8 +82,8 @@ class PlayMusicDecrypter:
             return dict(row)
 
     def normalize_path(self, path):
-        return unicode(self.normalize_path.re.sub(" ", path))
-    normalize_path.re = re.compile(r'[<>:"/\\|?*]')
+        """Remove invalid characters from path"""
+        return unicode(re.sub(r'[<>:"/\\|?*]', " ", path))
 
     def get_outfile(self):
         """Returns output filename based on song informations"""
