@@ -16,12 +16,15 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
 
-__version__ = "1.0"
+__version__ = "2.0"
 
-import os, sys, struct, re, glob, subprocess, zlib, tarfile, io, optparse
+import os, sys, struct, re, glob, optparse, time
 import Crypto.Cipher.AES, Crypto.Util.Counter
 import mutagen
 import sqlite3
+
+import superadb
+
 
 class PlayMusicDecrypter:
     """Decrypt MP3 file from Google Play Music offline storage (All Access)"""
@@ -38,9 +41,6 @@ class PlayMusicDecrypter:
         # Get file info
         self.database = database
         self.info = self.get_info()
-        
-        if self.info is None:
-            raise ValueError("Empty file info!")
 
     def decrypt(self):
         """Decrypt one block"""
@@ -66,7 +66,7 @@ class PlayMusicDecrypter:
 
             destination.write(decrypted)
             destination.flush()
-            
+
     def get_info(self):
         """Returns informations about song from database"""
         db = sqlite3.connect(self.database, detect_types=sqlite3.PARSE_DECLTYPES)
@@ -80,16 +80,19 @@ class PlayMusicDecrypter:
         row = cursor.fetchone()
         if row:
             return dict(row)
+        else:
+            raise ValueError("Empty file info!")
 
-    def normalize_path(self, path):
-        """Remove invalid characters from path"""
-        return unicode(re.sub(r'[<>:"/\\|?*]', " ", path))
+    def normalize_filename(self, filename):
+        """Remove invalid characters from filename"""
+        return unicode(re.sub(r'[<>:"/\\|?*]', " ", filename))
 
     def get_outfile(self):
         """Returns output filename based on song informations"""
-        destination_dir = os.path.join(self.normalize_path(self.info["AlbumArtist"]), self.normalize_path(self.info["Album"]))
+        destination_dir = os.path.join(self.normalize_filename(self.info["AlbumArtist"]),
+                                       self.normalize_filename(self.info["Album"]))
         filename = u"{TrackNumber:02d} - {Title}.mp3".format(**self.info)
-        return os.path.join(destination_dir, self.normalize_path(filename))
+        return os.path.join(destination_dir, self.normalize_filename(filename))
 
     def update_id3(self, outfile):
         """Update ID3 tags in outfile"""
@@ -107,99 +110,116 @@ class PlayMusicDecrypter:
         audio["compilation"] = str(self.info["Compilation"])
         audio.save()
 
-def pull_database(destination_dir="."):
-    """Pull Google Play Music database from device (works even without root access, yay!)"""
+
+def is_empty_file(filename):
+    """Returns True if file doesn't exist or is empty"""
+    return False if os.path.isfile(filename) and os.path.getsize(filename) > 0 else True
+
+
+def pull_database(destination_dir=".", adb="adb"):
+    """Pull Google Play Music database from device"""
+    print("Downloading Google Play Music database from device...")
+    try:
+        adb = superadb.SuperAdb(executable=adb)
+    except RuntimeError:
+        print("  Device is not connected! Exiting...")
+        sys.exit(1)
+
     if not os.path.isdir(destination_dir):
         os.makedirs(destination_dir)
 
-    print("Downloading database backup from device...")
-    subprocess.check_call(["adb", "backup", "-f", os.path.join(destination_dir, "music.ab"), "com.google.android.music"])
+    db_file = os.path.join(destination_dir, "music.db")
+    adb.pull("/data/data/com.google.android.music/databases/music.db", db_file)
+    if is_empty_file(db_file):
+        print("  Download failed! Exiting...")
+        sys.exit(1)
 
-    print("Extracting database file from backup...")
-    obj=zlib.decompressobj()
-    ab_file = os.path.join(destination_dir, "music.ab")
-    ab=open(ab_file, "rb")
-    buf_size = 1024*1024
-    data = ab.read(buf_size)[24:]
-    with open(os.path.join(destination_dir, "music.ab.raw"), "wb") as f:
-        f.write(obj.decompress(data))
 
-        data = ab.read(buf_size)
-        while data:
-            f.write(obj.decompress(data))
-            data = ab.read(buf_size)
-        f.write(obj.flush())
-        
-    os.remove(ab_file)
+def pull_library(source_dir="/data/data/com.google.android.music/files/music", destination_dir="encrypted", adb="adb"):
+    """Pull Google Play Music library from device"""
+    print("Downloading encrypted MP3 files from device...")
+    try:
+        adb = superadb.SuperAdb(executable=adb)
+    except RuntimeError:
+        print("  Device is not connected! Exiting...")
+        sys.exit(1)
 
-    tar = tarfile.open(os.path.join(destination_dir, "music.ab.raw"))
-    tf = tar.extractfile("apps/com.google.android.music/db/music.db")
-    with open(os.path.join(destination_dir, "music.db"), "wb") as f:
-        f.write(tf.read())
-
-def pull_library(destination_dir="music"):
-    """Pull Google Play Music library from backup"""
     if not os.path.isdir(destination_dir):
         os.makedirs(destination_dir)
 
-    print("Extracting encrypted MP3 files from backup...")
-    backup_file = os.path.join(destination_dir, "..", "music.ab.raw")
-    tar = tarfile.open(backup_file)
-    
-    for member in tar.getmembers():
-        if member.name.endswith(".mp3"):
-            tf = tar.extractfile(member)
-            with open(os.path.join(destination_dir, os.path.basename(member.name)), "wb") as f:
-                f.write(tf.read())
-                
-    os.remove(backup_file)
+    files = [f for f in adb.ls(source_dir) if f.endswith(".mp3")]
+    if files:
+        start_time = time.time()
+        for i, f in enumerate(files):
+            sys.stdout.write("\r  Downloading file {}/{}...".format(i + 1, len(files)))
+            sys.stdout.flush()
+            adb.pull(os.path.join(source_dir, f), os.path.join(destination_dir, f))
+        print("")
+        print("  All downloads finished ({:.1f}s)!".format(time.time() - start_time))
+    else:
+        print("  No files found! Exiting...")
+        sys.exit(1)
 
-def decrypt_files(source_dir="music", destination_dir=".", database="music.db"):
+
+def decrypt_files(source_dir="encrypted", destination_dir=".", database="music.db"):
     """Decrypt all MP3 files in source directory and write them to destination directory"""
+    print("Decrypting MP3 files...")
     if not os.path.isdir(destination_dir):
         os.makedirs(destination_dir)
 
-    for f in glob.glob(os.path.join(source_dir, "*.mp3")):
-        try:
-            decrypter = PlayMusicDecrypter(database, f)
-            print(u"Decrypting file {} -> {}".format(f, decrypter.get_outfile()))
-        except ValueError as e:
-            print(u"Skipping file {} ({})".format(f, e))
-            continue
+    files = glob.glob(os.path.join(source_dir, "*.mp3"))
+    if files:
+        start_time = time.time()
+        for f in files:
+            try:
+                decrypter = PlayMusicDecrypter(database, f)
+                print(u"  Decrypting file {} -> {}".format(f, decrypter.get_outfile()))
+            except ValueError as e:
+                print(u"  Skipping file {} ({})".format(f, e))
+                continue
 
-        outfile = os.path.join(destination_dir, decrypter.get_outfile())
-        if not os.path.isdir(os.path.dirname(outfile)):
-            os.makedirs(os.path.dirname(outfile))
+            outfile = os.path.join(destination_dir, decrypter.get_outfile())
+            if not os.path.isdir(os.path.dirname(outfile)):
+                os.makedirs(os.path.dirname(outfile))
 
-        decrypter.decrypt_all(outfile)
-        decrypter.update_id3(outfile)
+            decrypter.decrypt_all(outfile)
+            decrypter.update_id3(outfile)
+            os.remove(f)
+        print("  Decryption finished ({:.1f}s)!".format(time.time() - start_time))
+    else:
+        print("  No files found! Exiting...")
+        sys.exit(1)
 
-        os.remove(f)
 
 def main():
     # Parse command line options
     parser = optparse.OptionParser(description="Decrypt MP3 files from Google Play Music offline storage (All Access)",
-                                   usage="usage: %prog [-h] [options] destination_dir",
+                                   usage="usage: %prog [-h] [options] [destination_dir]",
                                    version="%prog {}".format(__version__))
+    parser.add_option("-a", "--adb", default="adb",
+                      help="path to adb executable")
     parser.add_option("-d", "--database",
                       help="local path to Google Play Music database file (will be downloaded from device via adb if not specified)")
     parser.add_option("-l", "--library",
                       help="local path to directory with encrypted MP3 files (will be downloaded from device via adb if not specified")
+    parser.add_option("-r", "--remote", default="/data/data/com.google.android.music/files/music",
+                      help="remote path to directory with encrypted MP3 files on device (default: %default)")
     (options, args) = parser.parse_args()
 
     if len(args) < 1:
-        parser.error("you have to specify destination directory for decrypted MP3 files")
-    destination_dir = args[0]
+        destination_dir = "."
+    else:
+        destination_dir = args[0]
 
     # Download Google Play Music database from device via adb
     if not options.database:
         options.database = os.path.join(destination_dir, "music.db")
-        pull_database(destination_dir)
+        pull_database(destination_dir, adb=options.adb)
 
-    # Extract encrypted MP3 files from backup
+    # Download encrypted MP3 files from device via adb
     if not options.library:
-        options.library = os.path.join(destination_dir, "music")
-        pull_library(options.library)
+        options.library = os.path.join(destination_dir, "encrypted")
+        pull_library(options.remote, options.library, adb=options.adb)
 
     # Decrypt all MP3 files
     decrypt_files(options.library, destination_dir, options.database)
