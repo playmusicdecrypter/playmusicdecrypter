@@ -17,8 +17,8 @@ Optional dependencies
 
 Usage
 -----
-1. Root your phone and install _BusyBox_ (https://play.google.com/store/apps/details?id=stericson.busybox)
-   (you can skip this step if you are using CyanogenMod or other ROM that already includes BusyBox)
+1. Root your phone and install _BusyBox_ (https://play.google.com/store/apps/details?id=stericson.busybox).
+   You can skip this step if you are using CyanogenMod or other ROM that already includes BusyBox
 2. Enable _Developer options_ by clicking 7x on _Build number_ in Settings -> About phone
 3. Enable _USB debugging_ in Settings -> Developer options
 4. Connect your phone to computer with USB cable
